@@ -1,211 +1,276 @@
-// app/page.tsx
-'use client';
-import { useState, useRef, useEffect } from 'react';
-import CameraFeed from './components/CameraFeed';
-import MetricsCard from './components/MetricsCard';
-import SignalCombinationSelector from './components/SignalCombinationSelector';
-import ChartComponent from './components/ChartComponent';
-import usePPGProcessing from './hooks/usePPGProcessing';
-import useSignalQuality from './hooks/useSignalQuality';
+"use client";
+import { useState, useRef, useEffect } from "react";
+import CameraFeed from "./components/CameraFeed";
+import ChartComponent from "./components/ChartComponent";
+import usePPGProcessing from "./hooks/usePPGProcessing";
+import useSignalQuality from "./hooks/useSignalQuality";
+import useMongoDB from "./hooks/useMongoDB";
+import Image from "next/image"; // For the favicon
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
-  const [isSampling, setIsSampling] = useState(false); // New state for sampling
-  const [isUploading, setIsUploading] = useState(false);
-  const [signalCombination, setSignalCombination] = useState('default');
-  const [showConfig, setShowConfig] = useState(false);
+  const [isSampling, setIsSampling] = useState(false);
+  const [signalCombination, setSignalCombination] = useState("default");
+  const [currentSubject, setCurrentSubject] = useState("");
+  const [confirmedSubject, setConfirmedSubject] = useState("");
+  const [isDarkMode, setIsDarkMode] = useState(true); // Default to dark mode
 
-  // Define refs for video and canvas
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { historicalData, loading, error, fetchHistoricalData, pushDataToMongo } = useMongoDB(confirmedSubject);
 
-  const {
-    ppgData,
-    valleys,
-    heartRate,
-    hrv,
-    processFrame,
-    startCamera,
-    stopCamera,
-  } = usePPGProcessing(isRecording, signalCombination, videoRef, canvasRef);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  const { ppgData, valleys, heartRate, hrv, processFrame, startCamera, stopCamera } =
+    usePPGProcessing(isRecording, signalCombination, videoRef, canvasRef);
 
   const { signalQuality, qualityConfidence } = useSignalQuality(ppgData);
 
-  // Start or stop recording
   useEffect(() => {
-    if (isRecording) {
-      startCamera();
-    } else {
-      stopCamera();
-    }
+    if (isRecording) startCamera();
+    else stopCamera();
   }, [isRecording]);
 
   useEffect(() => {
-    let animationFrame: number;
+    let animationFrame;
     const processFrameLoop = () => {
       if (isRecording) {
-        processFrame(); // Call the frame processing function
+        processFrame();
         animationFrame = requestAnimationFrame(processFrameLoop);
       }
     };
-    if (isRecording) {
-      processFrameLoop();
-    }
-    return () => {
-      cancelAnimationFrame(animationFrame); // Clean up animation frame on unmount
-    };
+    if (isRecording) processFrameLoop();
+    return () => cancelAnimationFrame(animationFrame);
   }, [isRecording]);
 
-  // Automatically send data every 10 seconds
-  // Automatically send data every second when sampling is enabled
   useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
-
-    if (isSampling && ppgData.length > 0) {
-      intervalId = setInterval(() => {
-        pushDataToMongo();
-      }, 10000); // Send data every second
+    let intervalId = null;
+    if (isSampling && ppgData.length > 0 && confirmedSubject) {
+      intervalId = setInterval(() => handlePushData(), 10000);
     }
-
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [isSampling, ppgData]);
+  }, [isSampling, ppgData, confirmedSubject]);
 
-  const pushDataToMongo = async () => {
-    if (isUploading) return; // Prevent overlapping calls
-
-    setIsUploading(true); // Lock the function
-    if (ppgData.length === 0) {
-      console.warn('No PPG data to send to MongoDB');
-      return;
-    }
-    // Prepare the record data – adjust or add additional fields as needed
-    const recordData = {
-      heartRate: {
-        bpm: isNaN(heartRate.bpm) ? 0 : heartRate.bpm, // Replace NaN with "ERRATIC"
-        confidence: hrv.confidence || 0,
-      },
-      hrv: {
-        sdnn: isNaN(hrv.sdnn) ? 0 : hrv.sdnn, // Replace NaN with "ERRATIC"
-        confidence: hrv.confidence || 0,
-      },
-
-      ppgData: ppgData, // Use the provided ppgData array
-      timestamp: new Date(),
-    };
-
-    try {
-      // Make a POST request to your backend endpoint that handles saving to MongoDB
-      const response = await fetch('/api/save-record', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(recordData),
-      });
-
-      const result = await response.json();
-      if (result.success) {
-        console.log('✅ Data successfully saved to MongoDB:', result.data);
-      } else {
-        console.error('❌ Upload failed:', result.error);
-      }
-    } catch (error) {
-      console.error('🚨 Network error - failed to save data:', error);
-    } finally {
-      setIsUploading(false); // Unlock the function
+  const confirmUser = () => {
+    if (currentSubject.trim()) {
+      setConfirmedSubject(currentSubject.trim());
+    } else {
+      alert("Please enter a valid Subject ID.");
     }
   };
 
+  const handleStartRecording = () => {
+    if (!confirmedSubject) {
+      alert("Please enter a subject name before recording.");
+      return;
+    }
+    setIsRecording(!isRecording);
+  };
+
+  const handleStartSampling = () => {
+    if (!confirmedSubject) {
+      alert("Please enter a subject name before sampling.");
+      return;
+    }
+    if (!isRecording || ppgData.length === 0) return;
+    setIsSampling(!isSampling);
+  };
+
+  const handlePushData = async () => {
+    if (!confirmedSubject) {
+      alert("Please enter a subject name before saving data.");
+      return;
+    }
+    if (ppgData.length === 0) return;
+    const recordData = {
+      subjectId: confirmedSubject || 'unknown',
+      heartRate: {
+        bpm: isNaN(heartRate.bpm) ? 0 : heartRate.bpm,
+        confidence: hrv.confidence || 0,
+      },
+      hrv: {
+        sdnn: isNaN(hrv.sdnn) ? 0 : hrv.sdnn,
+        confidence: hrv.confidence || 0,
+      },
+      ppgData: ppgData,
+      timestamp: new Date(),
+    };
+    try {
+      await pushDataToMongo(recordData);
+      console.log("✅ Data successfully saved to MongoDB");
+    } catch (error) {
+      console.error("❌ Failed to save data:", error.message);
+    }
+  };
+
+  const toggleDarkMode = () => {
+    setIsDarkMode(!isDarkMode);
+  };
+
   return (
-    <div className="flex flex-col items-center p-4">
-      {/* Header Section */}
-      <div className="flex flex-col md:flex-row items-center justify-between w-full max-w-4xl mb-4">
-        {/* Title */}
-        <h1 className="text-3xl font-bold">HeartLen</h1>
-        {/* Recording Button */}
-        <button
-          onClick={() => setIsRecording(!isRecording)}
-          className={`p-3 rounded-lg text-sm transition-all duration-300 ${
-            isRecording
-              ? 'bg-red-500 hover:bg-red-600 text-white'
-              : 'bg-cyan-500 hover:bg-cyan-600 text-white'
-          }`}
-        >
-          {isRecording ? '⏹ STOP' : '⏺ START'} RECORDING
-        </button>
-        {/* Sampling Button */}
-        <button
-          onClick={() => setIsSampling(!isSampling)}
-          className={`p-3 rounded-lg text-sm transition-all duration-300 ml-2 ${
-            isSampling
-              ? 'bg-green-500 hover:bg-green-600 text-white'
-              : 'bg-gray-500 hover:bg-gray-600 text-white'
-          }`}
-          disabled={!isRecording} // Enable only when recording is active
-        >
-          {isSampling ? '⏹ STOP SAMPLING' : '⏺ START SAMPLING'}
-        </button>
+    <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 p-4 ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}>
+      {/* Header with Centered HeartLens and Dark Mode Toggle */}
+      <header className="col-span-full flex items-center justify-between mb-6">
+        <div className="flex-1"></div> {/* Spacer */}
+        <div className="flex items-center">
+          <Image src="/favicon.ico" alt="HeartLens Icon" width={48} height={48} className="mr-3" />
+          <h1
+            className={`text-4xl lg:text-5xl xl:text-6xl font-bold ${
+              isDarkMode ? "text-cyan-400" : "text-cyan-500"
+            }`}
+          >
+            HeartLens
+          </h1>
+        </div>
+        <div className="flex-1 flex justify-end">
+          <button
+            onClick={toggleDarkMode}
+            className="bg-gray-500 text-white px-3 py-1 rounded-md focus:ring-2 focus:ring-cyan-500"
+          >
+            Change Light/Dark Mode
+          </button>
+        </div>
+      </header>
+
+      {/* Left Column: Camera Feed */}
+      <div className={`rounded-lg p-4 ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`}>
+        <div className="flex items-center mb-2">
+          <h2
+            className={`text-lg lg:text-xl xl:text-2xl font-bold ${
+              isDarkMode ? "text-white" : "text-gray-800"
+            }`}
+          >
+            Camera Feed
+          </h2>
+          <span
+            className={`ml-2 w-3 h-3 rounded-full ${
+              isRecording ? "bg-red-500 animate-pulse" : isDarkMode ? "bg-gray-600" : "bg-gray-400"
+            }`}
+          ></span>
+        </div>
+        <CameraFeed videoRef={videoRef} canvasRef={canvasRef} />
+        <div className="mt-2 flex items-center">
+          <div className="flex gap-2">
+            <button
+              onClick={handleStartRecording}
+              className={`bg-cyan-500 text-white px-4 py-2 rounded-md focus:ring-2 focus:ring-cyan-500 ${
+                isDarkMode ? "bg-cyan-500" : "bg-cyan-400"
+              }`}
+            >
+              {isRecording ? "Stop" : "Start"} Recording
+            </button>
+            <div className="relative">
+              <button
+                onClick={handleStartSampling}
+                className={`bg-gray-500 text-white px-4 py-2 rounded-md focus:ring-2 focus:ring-cyan-500 ${
+                  isSampling ? "ring-2 ring-green-500 animate-pulse" : ""
+                } ${isDarkMode ? "bg-gray-500" : "bg-gray-400"}`}
+                disabled={!isRecording || ppgData.length === 0}
+              >
+                {isSampling ? "Stop" : "Start"} Sampling
+              </button>
+            </div>
+          </div>
+          <button
+            onClick={handlePushData}
+            className={`bg-green-500 text-white px-4 py-2 rounded-md ml-auto focus:ring-2 focus:ring-cyan-500 ${
+              isDarkMode ? "bg-green-500" : "bg-green-400"
+            }`}
+            disabled={ppgData.length === 0}
+          >
+            Save Data
+          </button>
+        </div>
       </div>
 
-      {/* Main Grid: Camera and Chart Side by Side */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-4xl">
-        {/* Left Column: Camera Feed */}
-        <div className="space-y-4">
-          {/* Camera Feed */}
-          <CameraFeed videoRef={videoRef} canvasRef={canvasRef} />
-          {/* Signal Combination Selector */}
-          <button
-            onClick={() => setShowConfig((prev) => !prev)}
-            className="px-4 py-2 bg-cyan-500 text-white rounded hover:bg-cyan-600 w-full"
+      {/* Right Column: Chart, Metrics, User Panel */}
+      <div className="grid grid-cols-1 gap-4">
+        {/* Chart Component */}
+        <div className={`rounded-lg p-4 ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`}>
+          <h2
+            className={`text-lg lg:text-xl xl:text-2xl font-bold ${
+              isDarkMode ? "text-white" : "text-gray-800"
+            }`}
           >
-            Toggle Config
-          </button>
-          {showConfig && (
-            <SignalCombinationSelector
-              signalCombination={signalCombination}
-              setSignalCombination={setSignalCombination}
-            />
-          )}
+            PPG Signal Chart
+          </h2>
+          <ChartComponent ppgData={ppgData} valleys={valleys} />
         </div>
 
-        {/* Right Column: Chart and Metrics */}
-        <div className="space-y-4">
-          {/* Chart */}
-          <ChartComponent ppgData={ppgData} valleys={valleys} />
-
-          {/* Save Data to MongoDB Button */}
-          <button
-            onClick={pushDataToMongo}
-            className="w-full px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+        {/* Metrics Cards */}
+        <div className="grid grid-cols-2 gap-4">
+          <div
+            className={`rounded-lg p-4 text-white ${
+              isDarkMode ? "bg-cyan-500" : "bg-cyan-400"
+            }`}
           >
-            Save Data to MongoDB
-          </button>
-
-          {/* Metrics Cards (Side by Side) */}
-          <div className="flex flex-wrap gap-4">
-            {/* Heart Rate Card */}
-            <MetricsCard
-              title="HEART RATE"
-              value={heartRate || {}} // Pass the HeartRateResult object
-              confidence={heartRate?.confidence || 0}
-            />
-
-            {/* HRV Card */}
-            <MetricsCard
-              title="HRV"
-              value={hrv || {}} // Pass the HRVResult object
-              confidence={hrv?.confidence || 0}
-            />
-
-            {/* Signal Quality Card (Fallback for now) */}
-            <MetricsCard
-              title="SIGNAL QUALITY"
-              value={signalQuality || '--'} // String value for signal quality
-              confidence={qualityConfidence || 0}
-            />
+            <h3 className="font-bold text-base lg:text-lg">Heart Rate</h3>
+            <p className="text-lg lg:text-xl">{heartRate.bpm || "--"} BPM</p>
           </div>
+          <div
+            className={`rounded-lg p-4 text-white ${
+              isDarkMode ? "bg-green-500" : "bg-green-400"
+            }`}
+          >
+            <h3 className="font-bold text-base lg:text-lg">HRV</h3>
+            <p className="text-lg lg:text-xl">{hrv.sdnn || "--"} ms</p>
+          </div>
+        </div>
+
+        {/* User Panel */}
+        <div className={`rounded-lg p-4 ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`}>
+          <h2
+            className={`text-lg lg:text-xl xl:text-2xl font-bold ${
+              isDarkMode ? "text-white" : "text-gray-800"
+            }`}
+          >
+            User Panel
+          </h2>
+          <input
+            type="text"
+            value={currentSubject}
+            onChange={(e) => setCurrentSubject(e.target.value)}
+            placeholder="Enter Subject ID"
+            className={`w-full p-2 rounded-md border focus:ring-2 focus:ring-cyan-500 ${
+              isDarkMode ? "border-gray-600 bg-gray-600 text-white" : "border-gray-300 bg-white text-black"
+            } mb-2`}
+          />
+          <button
+            onClick={confirmUser}
+            className={`bg-blue-500 text-white px-4 py-2 rounded-md mr-2 focus:ring-2 focus:ring-cyan-500 ${
+              isDarkMode ? "bg-blue-500" : "bg-blue-400"
+            }`}
+          >
+            Confirm User
+          </button>
+          {confirmedSubject && (
+            <button
+              onClick={fetchHistoricalData}
+              className={`bg-blue-500 text-white px-4 py-2 rounded-md mr-2 focus:ring-2 focus:ring-cyan-500 ${
+                isDarkMode ? "bg-blue-500" : "bg-blue-400"
+              }`}
+            >
+              Fetch Historical Data
+            </button>
+          )}
+          {loading && (
+            <p className={`mt-2 ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+              Loading historical data...
+            </p>
+          )}
+          {error && (
+            <p className={`mt-2 ${isDarkMode ? "text-red-500" : "text-red-600"}`}>
+              Error: {error}
+            </p>
+          )}
+          {confirmedSubject && historicalData && historicalData.lastAccess && (
+            <div className={`mt-2 ${isDarkMode ? "text-white" : "text-gray-800"}`}>
+              <p>Last Access: {new Date(historicalData.lastAccess).toLocaleString()}</p>
+              <p>Avg Heart Rate: {historicalData.avgHeartRate} BPM</p>
+              <p>Avg HRV: {historicalData.avgHRV} ms</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
