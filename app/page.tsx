@@ -266,6 +266,7 @@ export default function Home() {
           )}
           {confirmedSubject && historicalData && historicalData.lastAccess && (
             <div className={`mt-2 ${isDarkMode ? "text-white" : "text-gray-800"}`}>
+              <p>User: {confirmedSubject}</p> {/* Display the user's name */}
               <p>Last Access: {new Date(historicalData.lastAccess).toLocaleString()}</p>
               <p>Avg Heart Rate: {historicalData.avgHeartRate} BPM</p>
               <p>Avg HRV: {historicalData.avgHRV} ms</p>
